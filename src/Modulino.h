@@ -1,5 +1,8 @@
-// Copyright (c) 2024 Arduino SA
+// Copyright (c) 2025 Arduino SA
 // SPDX-License-Identifier: MPL-2.0
+
+#ifndef ARDUINO_LIBRARIES_MODULINO_H
+#define ARDUINO_LIBRARIES_MODULINO_H
 
 #include "Wire.h"
 #include <vl53l4cd_class.h>  // from stm32duino
@@ -52,7 +55,7 @@ public:
     : address(address), name((char *)name) {}
   virtual ~Module() {}  
   bool begin() {
-    if (address == 0xFF) {
+    if (address >= 0x7F) {
       address = discover() / 2;  // divide by 2 to match address in fw main.c
     }
     return (address < 0x7F);
@@ -126,6 +129,17 @@ public:
   PinStatus isPressed(int index) {
     return last_status[index] ? HIGH : LOW;
   }
+  PinStatus isPressed(char button) {
+    int index = buttonToIndex(button);
+    if (index < 0) return LOW;
+    return isPressed(index);
+  }
+  PinStatus isPressed(const char *button) {
+    if (button == nullptr || button[0] == '\0' || button[1] != '\0') {
+      return LOW;
+    }
+    return isPressed(button[0]);
+  }
   bool update() {
     uint8_t buf[3];
     auto res = read((uint8_t*)buf, 3);
@@ -153,6 +167,14 @@ public:
   }
 private:
   bool last_status[3];
+  int buttonToIndex(char button) {
+    switch (toupper(button)) {
+      case 'A': return 0;
+      case 'B': return 1;
+      case 'C': return 2;
+      default:  return -1;
+    }
+  }
 protected:
   uint8_t match[1] = { 0x7C };  // same as fw main.c
 };
@@ -242,8 +264,9 @@ public:
   bool begin() {
     auto ret = Module::begin();
     if (ret) {
-      // check for set() bug
       auto _val = get();
+      _lastPosition = _val;
+      _lastDebounceTime = millis();
       set(100);
       if (get() != 100) {
         _bug_on_set = true;
@@ -276,6 +299,24 @@ public:
     get();
     return _pressed;
   }
+  int8_t getDirection() {
+    unsigned long now = millis();
+    if (now - _lastDebounceTime < DEBOUNCE_DELAY) {
+      return 0;
+    }
+    int16_t current = get();
+    int8_t direction = 0;
+    if (current > _lastPosition) {
+      direction = 1;
+    } else if (current < _lastPosition) {
+      direction = -1;
+    }
+    if (direction != 0) {
+      _lastDebounceTime = now;
+      _lastPosition = current;
+    }
+    return direction;
+  }
   virtual uint8_t discover() {
     for (unsigned int i = 0; i < sizeof(match)/sizeof(match[0]); i++) {
       if (scan(match[i])) {
@@ -287,6 +328,9 @@ public:
 private:
   bool _pressed = false;
   bool _bug_on_set = false;
+  int16_t _lastPosition = 0;
+  unsigned long _lastDebounceTime = 0;
+  static constexpr unsigned long DEBOUNCE_DELAY = 30;
 protected:
   uint8_t match[2] = { 0x74, 0x76 };
 };
@@ -315,7 +359,15 @@ public:
   }
   int update() {
     if (initialized) {
-      return _imu->readAcceleration(x, y, z);
+      int accel = _imu->readAcceleration(x, y, z);
+      int gyro = _imu->readGyroscope(roll, pitch, yaw);
+      return accel && gyro;
+    }
+    return 0;
+  }
+  int available() {
+    if (initialized) {
+      return _imu->accelerationAvailable() && _imu->gyroscopeAvailable();
     }
     return 0;
   }
@@ -328,9 +380,19 @@ public:
   float getZ() {
     return z;
   }
+  float getRoll() {
+    return roll;
+  }
+  float getPitch() {
+    return pitch;
+  }
+  float getYaw() {
+    return yaw;
+  }
 private:
   LSM6DSOXClass* _imu = nullptr;
   float x,y,z;
+  float roll,pitch,yaw; //gx, gy, gz
   int initialized = 0;
 };
 
@@ -615,3 +677,5 @@ private:
   float internal = NAN;
   _distance_api* api = nullptr;
 };
+
+#endif
